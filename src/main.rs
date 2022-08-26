@@ -7,6 +7,7 @@ use bevy::{
     render::{camera::WindowOrigin, renderer::RenderDevice},
     tasks::{AsyncComputeTaskPool, Task},
 };
+use std::thread::Thread;
 
 use bevy_pancam::{PanCam, PanCamPlugin};
 
@@ -15,11 +16,14 @@ use futures_lite::future;
 use geo::Intersects;
 use itertools::Itertools;
 use layout21::raw::{self, proto::ProtoImporter, BoundBox, BoundBoxTrait, Library};
+use rand::rngs::ThreadRng;
+use rand::Rng;
 
 mod tiled_renderer;
 use tiled_renderer::TiledRendererPlugin;
 
 mod types;
+use crate::raw::{Element, Rect, Shape};
 use types::{
     DrawTileEvent, FlattenedElems, GeoPolygon, GeoRect, GeoShapeEnum, LayerColors, Layers,
     LibLayers, LibraryWrapper, MainCamera, OpenVlsirLibCompleteEvent, RenderingCompleteEvent, Tile,
@@ -51,8 +55,8 @@ fn main() {
         .add_event::<RenderingCompleteEvent>()
         .init_resource::<Msaa>()
         .add_startup_system(setup)
-        .add_system(spawn_vlsir_open_task_sytem)
-        .add_system(handle_vlsir_open_task_system)
+        // .add_system(spawn_vlsir_open_task_sytem)
+        // .add_system(handle_vlsir_open_task_system)
         .add_system(load_lib_system)
         .add_system(iter_tile_index_system)
         .add_system(camera_changed_system)
@@ -93,6 +97,38 @@ fn camera_changed_system(
         info!("Camera new transform {t:?}, scale {}", proj.scale);
     }
 }
+
+// fn spawn_vlsir_open_task_sytem(mut commands: Commands, mut already_done: Local<bool>) {
+//     if !*already_done {
+//         let thread_pool = AsyncComputeTaskPool::get();
+//
+//         let task: Task<Library> = thread_pool.spawn(async move {
+//             let plib = raw::proto::proto::open(
+//                 "/home/colepoirier/Dropbox/rust_2020_onwards/doug/doug/libs/oscibear.proto",
+//             )
+//                 .unwrap();
+//             ProtoImporter::import(&plib, None).unwrap()
+//         });
+//         let task = LibraryWrapper(task);
+//         commands.spawn().insert(task);
+//         *already_done = true;
+//     }
+// }
+//
+// fn handle_vlsir_open_task_system(
+//     mut commands: Commands,
+//     mut lib: ResMut<VlsirLib>,
+//     mut vlsir_open_task_q: Query<(Entity, &mut LibraryWrapper)>,
+//     mut vlsir_open_lib_complete_event_writer: EventWriter<OpenVlsirLibCompleteEvent>,
+// ) {
+//     for (entity, mut task) in vlsir_open_task_q.iter_mut() {
+//         if let Some(vlsir_lib) = future::block_on(future::poll_once(&mut **task)) {
+//             lib.lib = Some(vlsir_lib);
+//             vlsir_open_lib_complete_event_writer.send(OpenVlsirLibCompleteEvent);
+//             commands.entity(entity).despawn();
+//         }
+//     }
+// }
 
 pub fn get_component_names_for_entity(
     entity: Entity,
@@ -139,44 +175,39 @@ fn iter_tile_index_system(
     }
 }
 
-fn spawn_vlsir_open_task_sytem(mut commands: Commands, mut already_done: Local<bool>) {
-    if !*already_done {
-        let thread_pool = AsyncComputeTaskPool::get();
-
-        let task: Task<Library> = thread_pool.spawn(async move {
-            let plib = raw::proto::proto::open(
-                "/home/colepoirier/Dropbox/rust_2020_onwards/doug/doug/libs/oscibear.proto",
-            )
-            .unwrap();
-            ProtoImporter::import(&plib, None).unwrap()
-        });
-        let task = LibraryWrapper(task);
-        commands.spawn().insert(task);
-        *already_done = true;
+fn generate_random_rect(rng: &mut ThreadRng, min_p: raw::Point, max_p: raw::Point) -> Element {
+    let p0 = raw::Point::new(
+        rng.gen_range(min_p.x..max_p.x),
+        rng.gen_range(min_p.y..max_p.y),
+    );
+    let max_w = max_p.x - p0.x;
+    let max_h = max_p.y - p0.y;
+    let p1 = raw::Point::new(
+        p0.x + rng.gen_range(0..max_w),
+        p0.y + rng.gen_range(0..max_h),
+    );
+    Element {
+        net: Some("random rect".into()),
+        layer: Default::default(),
+        purpose: Default::default(),
+        inner: Shape::Rect(Rect { p0, p1 }),
     }
 }
 
-fn handle_vlsir_open_task_system(
-    mut commands: Commands,
-    mut lib: ResMut<VlsirLib>,
-    mut vlsir_open_task_q: Query<(Entity, &mut LibraryWrapper)>,
-    mut vlsir_open_lib_complete_event_writer: EventWriter<OpenVlsirLibCompleteEvent>,
-) {
-    for (entity, mut task) in vlsir_open_task_q.iter_mut() {
-        if let Some(vlsir_lib) = future::block_on(future::poll_once(&mut **task)) {
-            lib.lib = Some(vlsir_lib);
-            vlsir_open_lib_complete_event_writer.send(OpenVlsirLibCompleteEvent);
-            commands.entity(entity).despawn();
-        }
+fn generate_random_elements(
+    num_elements: usize,
+    min_p: raw::Point,
+    max_p: raw::Point,
+) -> Vec<Element> {
+    let mut r = Vec::with_capacity(num_elements);
+    let mut rng = rand::thread_rng();
+    for _ in 0..num_elements {
+        r.push(generate_random_rect(&mut rng, min_p, max_p));
     }
+    r
 }
 
 fn load_lib_system(
-    mut vlsir_open_lib_complete_event_reader: EventReader<OpenVlsirLibCompleteEvent>,
-    vlsir_lib: Res<VlsirLib>,
-    mut layer_colors: ResMut<LayerColors>,
-    mut layers: ResMut<Layers>,
-    mut lib_layers: ResMut<LibLayers>,
     render_device: Res<RenderDevice>,
     mut tilemap: ResMut<TileMap>,
     mut tile_index_iter: ResMut<TileIndexIter>,
@@ -186,121 +217,102 @@ fn load_lib_system(
 ) {
     let texture_dim = render_device.limits().max_texture_dimension_2d;
 
-    for _ in vlsir_open_lib_complete_event_reader.iter() {
-        let lib = vlsir_lib.lib.as_ref().unwrap();
+    let num_elements = 1_000;
+    let min_p = raw::Point { x: 0, y: 0 };
+    let max_p = raw::Point {
+        x: 1_000_000,
+        y: 1_000_000,
+    };
+    let flattened_elems = generate_random_elements(num_elements, min_p, max_p);
 
-        {
-            let lib_layers = &lib.layers.read().unwrap().slots;
+    info!("num elems including instances: {}", flattened_elems.len());
 
-            for raw::Layer {
-                layernum, name: _, ..
-            } in lib_layers.values()
-            {
-                let num = *layernum as u8;
-                if let Some(_) = layers.insert(num, layer_colors.get_color()) {
-                    panic!(
-                        "Library layers corrupted multiple definitions for layer number {}",
-                        num
-                    );
-                }
-            }
-        }
-
-        *lib_layers = LibLayers(lib.layers.read().unwrap().clone());
-
-        let cell_ptr = lib.cells.iter().last().unwrap();
-
-        let cell = cell_ptr.read().unwrap();
-
-        let flattened_elems = cell.layout.as_ref().unwrap().flatten().unwrap();
-
-        info!("num elems including instances: {}", flattened_elems.len());
-
-        let mut bbox = BoundBox::empty();
-        for elem in flattened_elems.iter() {
-            bbox = elem.inner.union(&bbox);
-        }
-
-        assert!(!bbox.is_empty(), "bbox must be valid!");
-        *min_offset_res = TileMapLowerLeft {
-            x: bbox.p0.x as i64,
-            y: bbox.p0.y as i64,
-        };
-
-        info!("flattened bbox is {bbox:?}");
-
-        let dx = (bbox.p1.x - bbox.p0.x) as u32;
-        let dy = (bbox.p1.y - bbox.p0.y) as u32;
-
-        let num_x_tiles = (dx as f32 / texture_dim as f32).ceil() as u32;
-        let num_y_tiles = (dy as f32 / texture_dim as f32).ceil() as u32;
-
-        let mut x = bbox.p0.x as i64;
-        let mut y = bbox.p0.y as i64;
-
-        let mut tilemap_shift = raw::Point::default();
-
-        if x < 0 {
-            tilemap_shift.x = -x as isize;
-        }
-
-        if y < 0 {
-            tilemap_shift.y = -y as isize;
-        }
-
-        for iy in 0..num_y_tiles {
-            let ymin = y;
-            y += texture_dim as i64;
-            let ymax = y;
-            for ix in 0..num_x_tiles {
-                let xmin = x;
-                x += texture_dim as i64;
-                let xmax = x;
-
-                let extents = GeoRect::new((xmin, ymin), (xmax, ymax));
-
-                tilemap.insert(
-                    (ix, iy),
-                    Tile {
-                        extents,
-                        shapes: vec![],
-                    },
-                );
-            }
-
-            x = bbox.p0.x as i64;
-        }
-
-        let mut shape_count = 0;
-
-        info!("{bbox:?}, dx: {dx}, dy: {dy}, tiles: [{num_x_tiles}, {num_y_tiles}]");
-
-        let t = std::time::Instant::now();
-
-        import_cell_shapes(
-            tilemap_shift,
-            texture_dim,
-            &mut tilemap,
-            &flattened_elems,
-            &mut shape_count,
-        );
-
-        info!("DONE {shape_count} shapes in {:?}!", t.elapsed());
-
-        *flattened_elems_res = FlattenedElems(flattened_elems);
-
-        stats(&tilemap);
-
-        let (x, y) = get_grid_shape(&tilemap);
-
-        let mut index_iter = (161..y).cartesian_product(0..x);
-
-        let (y, x) = index_iter.next().unwrap();
-
-        *tile_index_iter = TileIndexIter(Some(index_iter));
-
-        ev.send(DrawTileEvent((x, y)));
+    let mut bbox = BoundBox::empty();
+    for elem in flattened_elems.iter() {
+        bbox = elem.inner.union(&bbox);
     }
+
+    assert!(!bbox.is_empty(), "bbox must be valid!");
+    *min_offset_res = TileMapLowerLeft {
+        x: bbox.p0.x as i64,
+        y: bbox.p0.y as i64,
+    };
+
+    info!("flattened bbox is {bbox:?}");
+
+    let dx = (bbox.p1.x - bbox.p0.x) as u32;
+    let dy = (bbox.p1.y - bbox.p0.y) as u32;
+
+    let num_x_tiles = (dx as f32 / texture_dim as f32).ceil() as u32;
+    let num_y_tiles = (dy as f32 / texture_dim as f32).ceil() as u32;
+
+    info!("num_x_tiles: {num_x_tiles}, num_y_tiles: {num_y_tiles}");
+
+    let mut x = bbox.p0.x as i64;
+    let mut y = bbox.p0.y as i64;
+
+    let mut tilemap_shift = raw::Point::default();
+
+    if x < 0 {
+        tilemap_shift.x = -x as isize;
+    }
+
+    if y < 0 {
+        tilemap_shift.y = -y as isize;
+    }
+
+    for iy in 0..num_y_tiles {
+        let ymin = y;
+        y += texture_dim as i64;
+        let ymax = y;
+        for ix in 0..num_x_tiles {
+            let xmin = x;
+            x += texture_dim as i64;
+            let xmax = x;
+
+            let extents = GeoRect::new((xmin, ymin), (xmax, ymax));
+
+            tilemap.insert(
+                (ix, iy),
+                Tile {
+                    extents,
+                    shapes: vec![],
+                },
+            );
+        }
+
+        x = bbox.p0.x as i64;
+    }
+
+    let mut shape_count = 0;
+
+    info!("{bbox:?}, dx: {dx}, dy: {dy}, tiles: [{num_x_tiles}, {num_y_tiles}]");
+
+    let t = std::time::Instant::now();
+
+    import_cell_shapes(
+        tilemap_shift,
+        texture_dim,
+        &mut tilemap,
+        &flattened_elems,
+        &mut shape_count,
+    );
+
+    info!("DONE {shape_count} shapes in {:?}!", t.elapsed());
+
+    *flattened_elems_res = FlattenedElems(flattened_elems);
+
+    stats(&tilemap);
+
+    let (x, y) = get_grid_shape(&tilemap);
+
+    let mut index_iter = (0..y).cartesian_product(0..x);
+
+    let (y, x) = index_iter.next().unwrap();
+
+    *tile_index_iter = TileIndexIter(Some(index_iter));
+
+    ev.send(DrawTileEvent((x, y)));
 }
 
 pub fn import_cell_shapes(

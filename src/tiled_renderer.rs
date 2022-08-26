@@ -91,25 +91,26 @@ fn spawn_shapes_system(
 
         let mut num_duplicates = 0;
 
-        for idx in tile.shapes.iter() {
-            let e = &(**flattened_elems)[*idx];
-            if !set.insert(e) {
-                num_duplicates += 1;
-            }
-        }
-
-        info!("Num duplicates: {num_duplicates}");
+        // for idx in tile.shapes.iter() {
+        //     let e = &(**flattened_elems)[*idx];
+        //     if !set.insert(e) {
+        //         num_duplicates += 1;
+        //     }
+        // }
+        //
+        // info!("Num duplicates: {num_duplicates}");
 
         let mut existing_shapes_iter = existing_lyon_shapes.iter_mut();
         for idx in tile.shapes.iter() {
             let el = &(**flattened_elems)[*idx];
 
-            let layer = lib_layers
-                .get(el.layer)
-                .expect("This Element's LayerKey does not exist in this Library's Layers")
-                .layernum as u8;
+            // let layer = lib_layers
+            //     .get(el.layer)
+            //     .expect("This Element's LayerKey does not exist in this Library's Layers")
+            //     .layernum as u8;
 
-            let color = layers.get(&layer).unwrap();
+            // let color = layers.get(&layer).unwrap();
+            let color = *(Color::WHITE.set_a(ALPHA));
 
             if let raw::Shape::Rect(r) = &el.inner {
                 let raw::Rect { p0, p1 } = r;
@@ -128,17 +129,17 @@ fn spawn_shapes_system(
                     closed: true,
                 };
 
-                let transform = Transform::from_translation(Vec3::new(0.0, 0.0, layer as f32));
+                let transform = Transform::from_translation(Vec3::new(0.0, 0.0, 0.0));
 
                 let lyon_shape = GeometryBuilder::build_as(
                     &lyon_poly,
                     DrawMode::Outlined {
                         fill_mode: FillMode {
-                            color: *color.clone().set_a(ALPHA),
+                            color,
                             options: FillOptions::default(),
                         },
                         outline_mode: StrokeMode {
-                            color: *color,
+                            color,
                             options: StrokeOptions::default().with_line_width(WIDTH),
                         },
                     },
